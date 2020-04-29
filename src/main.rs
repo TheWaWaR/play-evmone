@@ -1,21 +1,14 @@
 // use libc;
-use std::collections::HashMap;
 use std::alloc::{dealloc, Layout};
+use std::collections::HashMap;
 use std::ptr;
 
 use evmc_vm::{
-    self as vm,
-    ffi,
-    EvmcVm,
-    EvmcContainer,
-    ExecutionContext,
-    ExecutionMessage,
-    ExecutionResult,
+    self as vm, ffi, EvmcContainer, EvmcVm, ExecutionContext, ExecutionMessage, ExecutionResult,
 };
 
-
 #[link(name = "evmone")]
-extern {
+extern "C" {
     fn evmc_create_evmone() -> *mut ffi::evmc_vm;
 }
 
@@ -38,10 +31,8 @@ fn main() {
         let host_context = Box::new(HostContext::default());
         let host_context_ptr = Box::into_raw(host_context) as *mut ffi::evmc_host_context;
         let mut context = ExecutionContext::new(&host, host_context_ptr);
-        let evmone = unsafe { evmc_create_evmone() };
-        let container: Box<EvmcContainer<TestVm>> = unsafe {
-            EvmcContainer::from_ffi_pointer(evmone)
-        };
+        let container: Box<EvmcContainer<TestVm>> =
+            unsafe { EvmcContainer::from_ffi_pointer(evmc_create_evmone()) };
 
         let message = vm::ExecutionMessage::new(
             vm::MessageKind::EVMC_CALL,
@@ -55,13 +46,12 @@ fn main() {
             vm::Bytes32::default(),
         );
         let code = [0u8; 0];
-        let result = container
-            .execute(
-                vm::Revision::EVMC_PETERSBURG,
-                &code,
-                &message,
-                Some(&mut context)
-            );
+        let result = container.execute(
+            vm::Revision::EVMC_PETERSBURG,
+            &code,
+            &message,
+            Some(&mut context),
+        );
         println!("[Round {}] Execution result: {:?}", i, result);
 
         unsafe {
@@ -69,6 +59,7 @@ fn main() {
             ptr::drop_in_place(host_context_ptr);
             dealloc(host_context_ptr as *mut u8, Layout::new::<HostContext>());
         }
+        std::mem::forget(container);
     }
 }
 
@@ -99,12 +90,12 @@ pub struct HostContext {
     storage: HashMap<Bytes32, Bytes32>,
 }
 
-
 unsafe extern "C" fn get_dummy_tx_context(
-    _context: *mut ffi::evmc_host_context,
+    context: *mut ffi::evmc_host_context,
 ) -> ffi::evmc_tx_context {
-    // let ctx = Box::from_raw(context as *mut HostContext);
-    // println!("host context: {:?}", ctx);
+    let ctx = Box::from_raw(context as *mut HostContext);
+    println!("host context: {:?}", ctx);
+    std::mem::forget(ctx);
     ffi::evmc_tx_context {
         tx_gas_price: vm::Uint256::default(),
         tx_origin: vm::Address::default(),

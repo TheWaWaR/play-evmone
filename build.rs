@@ -17,13 +17,13 @@ fn first_path_with_file(file: &str) -> Option<String> {
     if let Some(ld_path) = env::var_os("LD_LIBRARY_PATH") {
         for p in env::split_paths(&ld_path) {
             if is_file_in(file, &p) {
-                return p.to_str().map(String::from)
+                return p.to_str().map(String::from);
             }
         }
     }
-    for p in &["/usr/lib","/usr/local/lib"] {
+    for p in &["/usr/lib", "/usr/local/lib"] {
         if is_file_in(file, &Path::new(p)) {
-            return Some(String::from(*p))
+            return Some(String::from(*p));
         }
     }
     None
@@ -33,6 +33,6 @@ fn is_file_in(file: &str, folder: &Path) -> bool {
     let full = folder.join(file);
     match fs::metadata(full) {
         Ok(ref found) if found.is_file() => true,
-        _ => false
+        _ => false,
     }
 }

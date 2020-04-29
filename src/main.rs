@@ -31,8 +31,19 @@ fn main() {
         let host_context = Box::new(HostContext::default());
         let host_context_ptr = Box::into_raw(host_context) as *mut ffi::evmc_host_context;
         let mut context = ExecutionContext::new(&host, host_context_ptr);
-        let container: Box<EvmcContainer<TestVm>> =
-            unsafe { EvmcContainer::from_ffi_pointer(evmc_create_evmone()) };
+        let instance = unsafe {
+            let evmone = evmc_create_evmone();
+            ffi::evmc_vm {
+                abi_version: (*evmone).abi_version,
+                name: (*evmone).name,
+                version: (*evmone).version,
+                destroy: (*evmone).destroy,
+                execute: (*evmone).execute,
+                get_capabilities: (*evmone).get_capabilities,
+                set_option: (*evmone).set_option,
+            }
+        };
+        let container = EvmcContainer::<TestVm>::new(instance);
 
         let message = vm::ExecutionMessage::new(
             vm::MessageKind::EVMC_CALL,
@@ -59,7 +70,6 @@ fn main() {
             ptr::drop_in_place(host_context_ptr);
             dealloc(host_context_ptr as *mut u8, Layout::new::<HostContext>());
         }
-        std::mem::forget(container);
     }
 }
 
@@ -67,6 +77,7 @@ struct TestVm {}
 
 impl EvmcVm for TestVm {
     fn init() -> Self {
+        println!("TestVm::init");
         TestVm {}
     }
 
@@ -77,7 +88,7 @@ impl EvmcVm for TestVm {
         message: &ExecutionMessage,
         _context: Option<&mut ExecutionContext>,
     ) -> ExecutionResult {
-        println!("message: {:?}", message);
+        println!("TestVm.execute: {:?}", message);
         ExecutionResult::failure()
     }
 }

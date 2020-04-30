@@ -5,6 +5,7 @@ use std::ptr;
 use std::slice::from_raw_parts;
 
 use evmc_sys as ffi;
+use serde::{Deserialize, Serialize};
 
 /// EVMC call kind.
 pub type CallKind = ffi::evmc_call_kind;
@@ -20,6 +21,9 @@ pub type StorageStatus = ffi::evmc_storage_status;
 
 /// EVMC VM revision.
 pub type Revision = ffi::evmc_revision;
+
+pub type TxContext = ffi::evmc_tx_context;
+pub type HostInterface = ffi::evmc_host_interface;
 
 #[link(name = "evmone")]
 extern "C" {
@@ -61,7 +65,7 @@ impl Evmone {
 
 macro_rules! impl_convert {
     ($struct:ident, $inner:ty, $target:path) => {
-        #[derive(Eq, PartialEq, Hash, Default, Clone)]
+        #[derive(Eq, PartialEq, Hash, Default, Clone, Serialize, Deserialize)]
         pub struct $struct(pub $inner);
 
         impl From<$target> for $struct {
@@ -90,17 +94,40 @@ impl_convert!(Uint256, [u8; 32], ffi::evmc_uint256be);
 
 #[derive(Debug)]
 pub struct ExecutionResult {
-    inner: ffi::evmc_result,
+    pub status_code: StatusCode,
+    pub gas_left: i64,
+    pub output_data: Vec<u8>,
+    pub release: ffi::evmc_release_result_fn,
+    pub create_address: Address,
+    pub padding: [u8; 4],
 }
 
 impl From<ffi::evmc_result> for ExecutionResult {
     fn from(result: ffi::evmc_result) -> ExecutionResult {
-        ExecutionResult { inner: result }
+        let output_data = unsafe { from_raw_parts(result.output_data, result.output_size) };
+        ExecutionResult {
+            status_code: result.status_code,
+            gas_left: result.gas_left,
+            output_data: output_data.to_vec(),
+            release: result.release,
+            create_address: result.create_address.into(),
+            padding: result.padding,
+        }
     }
 }
 impl From<ExecutionResult> for ffi::evmc_result {
     fn from(result: ExecutionResult) -> ffi::evmc_result {
-        result.inner
+        let output_size = result.output_data.len();
+        let output_data = result.output_data.as_ptr();
+        ffi::evmc_result {
+            status_code: result.status_code,
+            gas_left: result.gas_left,
+            output_data,
+            output_size,
+            release: result.release,
+            create_address: result.create_address.into(),
+            padding: result.padding,
+        }
     }
 }
 
@@ -210,16 +237,16 @@ impl<T: HostContext> DerefMut for HostContextWrapper<T> {
 }
 
 pub trait HostContext {
-    fn interface() -> ffi::evmc_host_interface;
+    fn interface() -> HostInterface;
 
-    fn get_tx_context(&mut self) -> ffi::evmc_tx_context;
+    fn get_tx_context(&mut self) -> TxContext;
     fn account_exists(&mut self, address: &Address) -> bool;
     fn get_storage(&mut self, address: &Address, key: &Bytes32) -> Bytes32;
     fn set_storage(&mut self, address: Address, key: Bytes32, value: Bytes32) -> StorageStatus;
     fn get_balance(&mut self, address: &Address) -> Uint256;
     fn call(&mut self, msg: ExecutionMessage) -> ExecutionResult;
     fn selfdestruct(&mut self, address: &Address, beneficiary: &Address);
-    fn emit_log(&mut self, address: &Address, data: &[u8], topics: &[ffi::evmc_bytes32]);
+    fn emit_log(&mut self, address: &Address, data: &[u8], topics: &[Bytes32]);
     fn copy_code(&mut self, address: &Address, code_offset: usize, buffer: &[u8]) -> usize;
     fn get_code_size(&mut self, address: &Address) -> usize;
     fn get_code_hash(&mut self, address: &Address) -> Bytes32;
@@ -294,6 +321,8 @@ pub fn get_interface<T: HostContext>() -> ffi::evmc_host_interface {
         let address = Address::from(*address);
         let data: &[u8] = from_raw_parts(data, data_size);
         let topics: &[ffi::evmc_bytes32] = from_raw_parts(topics, topics_count);
+        let topics: &[Bytes32] =
+            &*(topics as *const [evmc_sys::evmc_bytes32] as *const [Bytes32]);
         HostContextWrapper::<T>::from(context).emit_log(&address, data, topics)
     }
 

@@ -129,15 +129,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "evmc-vm"
-version = "7.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f07be25d8df1c88f877f02441af93b6bd15d6d0bf6aaef52ae0dca0eed19ceb5"
-dependencies = [
- "evmc-sys",
-]
-
-[[package]]
 name = "glob"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -151,6 +142,12 @@ checksum = "61565ff7aaace3525556587bd2dc31d4a07071957be715e63ce7b1eccf51a8f4"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "hex"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "644f9158b2f133fd50f5fb3242878846d9eb792e445c893805ff0e3824006e35"
 
 [[package]]
 name = "humantime"
@@ -224,7 +221,8 @@ checksum = "19b17cddbe7ec3f8bc800887bab5e717348c95ea2ca0b1bf0837fb964dc67099"
 name = "play-evmone"
 version = "0.1.0"
 dependencies = [
- "evmc-vm",
+ "evmc-sys",
+ "hex",
  "libc",
 ]
 

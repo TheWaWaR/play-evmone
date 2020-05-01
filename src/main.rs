@@ -445,7 +445,7 @@ impl HostContext for TestHostContext {
     fn get_tx_context(&mut self) -> TxContext {
         TxContext {
             tx_gas_price: Uint256::default().into(),
-            tx_origin: Address([10u8; 20]).into(),
+            tx_origin: Address([128u8; 20]).into(),
             block_coinbase: Address::default().into(),
             block_number: 0,
             block_timestamp: 0,

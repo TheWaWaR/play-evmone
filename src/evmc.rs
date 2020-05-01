@@ -249,7 +249,6 @@ impl From<ExecutionResult> for ffi::evmc_result {
 pub struct ExecutionContext {
     pub interface: ffi::evmc_host_interface,
     pub context: *mut ffi::evmc_host_context,
-    pub tx_context: ffi::evmc_tx_context,
 }
 
 impl ExecutionContext {
@@ -257,15 +256,7 @@ impl ExecutionContext {
         interface: ffi::evmc_host_interface,
         context: *mut ffi::evmc_host_context,
     ) -> ExecutionContext {
-        let tx_context = unsafe {
-            assert!(interface.get_tx_context.is_some());
-            interface.get_tx_context.unwrap()(context)
-        };
-        ExecutionContext {
-            interface,
-            context,
-            tx_context,
-        }
+        ExecutionContext { interface, context }
     }
 
     pub fn const_interface(&self) -> *const ffi::evmc_host_interface {

@@ -1,17 +1,16 @@
 use std::alloc::{dealloc, Layout};
+use std::fmt;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 use std::slice::from_raw_parts;
 
 use evmc_sys as ffi;
-use serde::{Deserialize, Serialize};
+use hex;
+use serde;
 
 /// EVMC call kind.
 pub type CallKind = ffi::evmc_call_kind;
-
-/// EVMC message (call) flags.
-pub type CallFlags = ffi::evmc_flags;
 
 /// EVMC status code.
 pub type StatusCode = ffi::evmc_status_code;
@@ -25,19 +24,13 @@ pub type Revision = ffi::evmc_revision;
 pub type TxContext = ffi::evmc_tx_context;
 pub type HostInterface = ffi::evmc_host_interface;
 
-#[link(name = "evmone")]
-extern "C" {
-    fn evmc_create_evmone() -> *mut ffi::evmc_vm;
+pub struct EvmcVm {
+    pub instance: *mut ffi::evmc_vm,
 }
 
-pub struct Evmone {
-    pub inner: *mut ffi::evmc_vm,
-}
-
-impl Evmone {
-    pub fn new() -> Evmone {
-        let inner = unsafe { evmc_create_evmone() };
-        Evmone { inner }
+impl EvmcVm {
+    pub fn new(instance: *mut ffi::evmc_vm) -> EvmcVm {
+        EvmcVm { instance }
     }
 
     pub fn execute(
@@ -48,9 +41,9 @@ impl Evmone {
         context: &mut ExecutionContext,
     ) -> ExecutionResult {
         let result = unsafe {
-            let execute_fn = (*self.inner).execute.clone().unwrap();
+            let execute_fn = (*self.instance).execute.clone().unwrap();
             execute_fn(
-                self.inner,
+                self.instance,
                 context.const_interface(),
                 context.context,
                 revision,
@@ -63,11 +56,79 @@ impl Evmone {
     }
 }
 
+#[macro_export]
+macro_rules! impl_serde {
+    ($struct:ident, $visitor:ident, $parse_bytes:path) => {
+        struct $visitor;
+
+        impl<'b> serde::de::Visitor<'b> for $visitor {
+            type Value = $struct;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                write!(formatter, "a 0x-prefixed hex string")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let bytes = if &v.as_bytes()[0..2] == b"0x" {
+                    &v.as_bytes()[2..]
+                } else {
+                    &v.as_bytes()[..]
+                };
+                if bytes.len() & 1 != 0 {
+                    return Err(E::invalid_length(bytes.len(), &"odd length"));
+                }
+                $parse_bytes(bytes).map_err(E::custom)
+            }
+
+            fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                self.visit_str(&v)
+            }
+        }
+
+        impl serde::Serialize for $struct {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                let output = format!("0x{}", hex::encode(&self.0));
+                serializer.serialize_str(output.as_str())
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $struct {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                deserializer.deserialize_str($visitor)
+            }
+        }
+    };
+}
+
 macro_rules! impl_convert {
-    ($struct:ident, $inner:ty, $target:path) => {
-        #[derive(Eq, PartialEq, Hash, Default, Clone, Serialize, Deserialize)]
+    ($struct:ident, $visitor:ident, $inner:ty, $target:path, $parse_bytes:path) => {
+        #[derive(Eq, Default, Clone)]
         pub struct $struct(pub $inner);
 
+        impl ::std::cmp::PartialEq for $struct {
+            fn eq(&self, other: &Self) -> bool {
+                self.0 == other.0
+            }
+        }
+
+        impl ::std::hash::Hash for $struct {
+            fn hash<H: ::std::hash::Hasher>(&self, state: &mut H) {
+                state.write(&self.0[..]);
+                // self.0.hash(state);
+            }
+        }
         impl From<$target> for $struct {
             fn from(data: $target) -> $struct {
                 $struct(data.bytes)
@@ -81,18 +142,58 @@ macro_rules! impl_convert {
         impl ::std::fmt::Debug for $struct {
             fn fmt(&self, f: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
                 let prefix = if f.alternate() { "0x" } else { "" };
-                write!(f, "{}{}", prefix, ::hex::encode(self.0))
+                write!(f, "{}{}", prefix, hex::encode(self.0))
             }
         }
+        impl ::std::ops::Deref for $struct {
+            type Target = [u8];
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+        impl ::std::ops::DerefMut for $struct {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.0
+            }
+        }
+
+        impl_serde!($struct, $visitor, $parse_bytes);
     };
 }
 
-impl_convert!(Address, [u8; 20], ffi::evmc_address);
-impl_convert!(Bytes32, [u8; 32], ffi::evmc_bytes32);
-// Big Endian
-impl_convert!(Uint256, [u8; 32], ffi::evmc_uint256be);
+fn parse_bytes<T: Default + DerefMut<Target = [u8]> + Sized>(bytes: &[u8]) -> Result<T, String> {
+    if bytes.len() / 2 != std::mem::size_of::<T>() {
+        return Err(format!("length not expected: {}", bytes.len()));
+    }
+    let mut target = T::default();
+    let inner: &mut [u8] = &mut target;
+    hex::decode_to_slice(bytes, inner).map_err(|e| e.to_string())?;
+    Ok(target)
+}
 
-#[derive(Debug)]
+impl_convert!(
+    Address,
+    AddressVisitor,
+    [u8; 20],
+    ffi::evmc_address,
+    parse_bytes
+);
+impl_convert!(
+    Bytes32,
+    Bytes32Visitor,
+    [u8; 32],
+    ffi::evmc_bytes32,
+    parse_bytes
+);
+// Big Endian
+impl_convert!(
+    Uint256,
+    Uint256Visitor,
+    [u8; 32],
+    ffi::evmc_uint256be,
+    parse_bytes
+);
+
 pub struct ExecutionResult {
     pub status_code: StatusCode,
     pub gas_left: i64,
@@ -100,6 +201,20 @@ pub struct ExecutionResult {
     pub release: ffi::evmc_release_result_fn,
     pub create_address: Address,
     pub padding: [u8; 4],
+}
+
+impl fmt::Debug for ExecutionResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let output_data_hex = hex::encode(&self.output_data);
+        f.debug_struct("ExecutionResult")
+            .field("status_code", &self.status_code)
+            .field("gas_left", &self.gas_left)
+            .field("output_data", &output_data_hex)
+            .field("release", &self.release)
+            .field("create_address", &self.create_address)
+            .field("padding", &self.padding)
+            .finish()
+    }
 }
 
 impl From<ffi::evmc_result> for ExecutionResult {

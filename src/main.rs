@@ -1,80 +1,296 @@
-mod evmone;
+mod abi;
+mod abi_cmd;
+mod evmc;
 
 use std::collections::HashMap;
+use std::fmt;
 use std::fs;
 
-use clap::{App, Arg};
-use evmc_sys as ffi;
-use evmone::{
-    get_interface, Address, Bytes32, CallKind, Evmone, ExecutionContext, ExecutionMessage,
-    ExecutionResult, HostContext, HostContextPtr, HostInterface, Revision, StorageStatus,
-    TxContext, Uint256,
+use clap::{App, Arg, ArgMatches, SubCommand};
+use evmc::{
+    get_interface, Address, Bytes32, CallKind, EvmcVm, ExecutionContext, ExecutionMessage,
+    ExecutionResult, HostContext, HostContextPtr, HostContextWrapper, HostInterface, Revision,
+    StatusCode, StorageStatus, TxContext, Uint256,
 };
+use evmc_sys as ffi;
 use serde::{Deserialize, Serialize};
 
-const SIMPLE_STORAGE_CODE: &str = "60806040525b607b60006000508190909055505b610018565b60db806100266000396000f3fe60806040526004361060295760003560e01c806360fe47b114602f5780636d4ce63c14605b576029565b60006000fd5b60596004803603602081101560445760006000fd5b81019080803590602001909291905050506084565b005b34801560675760006000fd5b50606e6094565b6040518082815260200191505060405180910390f35b8060006000508190909055505b50565b6000600060005054905060a2565b9056fea26469706673582212204e58804e375d4a732a7b67cce8d8ffa904fa534d4555e655a433ce0a5e0d339f64736f6c63430006060033";
+#[link(name = "evmone")]
+extern "C" {
+    fn evmc_create_evmone() -> *mut ffi::evmc_vm;
+}
 
-fn main() {
-    let matches = App::new("Play evmone")
-        .arg(
-            Arg::with_name("code")
-                .long("code")
-                .short("c")
-                .takes_value(true)
-                .required(true)
-                .help("The binary code path"),
+// TODO
+// ====
+//  [x]: save/load storage(TestHostContext) from a json file
+//  [x]: Merge two TestHostContext
+//  [ ]: Test SimpleStorage::{set, get}
+//  [ ]: Test LogEvents::log
+//  [ ]: Test create contract
+//  [ ]: Test call other contract
+//  [ ]: Test selfdestruct
+
+fn main() -> Result<(), String> {
+    let arg_input_data = Arg::with_name("input-data")
+        .long("input-data")
+        .short("i")
+        .takes_value(true)
+        .help("The input data for the contract");
+    let arg_input_storage = Arg::with_name("input-storage")
+        .long("input-storage")
+        .short("s")
+        .takes_value(true)
+        .help("The storage to run the contract");
+    let arg_output_storage = Arg::with_name("output-storage")
+        .long("output-storage")
+        .short("o")
+        .takes_value(true)
+        .help("The storage after run the contract");
+    let arg_address = Arg::with_name("address")
+        .long("address")
+        .takes_value(true)
+        .required(true)
+        .help("The account address");
+    let global_matches = App::new("Play evmone")
+        .subcommand(
+            SubCommand::with_name("list")
+                .about("List all accounts")
+                .arg(arg_input_storage.clone()),
         )
-        .arg(
-            Arg::with_name("input-data")
-                .long("input-data")
-                .short("i")
-                .takes_value(true)
-                .help("The input data for the contract"),
+        .subcommand(
+            SubCommand::with_name("remove")
+                .about("Remove an account")
+                .arg(arg_input_storage.clone())
+                .arg(arg_address.clone()),
         )
-        .arg(
-            Arg::with_name("storage")
-                .long("storage")
-                .short("s")
-                .takes_value(true)
-                .help("The storage to run the contract"),
+        .subcommand(
+            SubCommand::with_name("show")
+                .about("Show the details of an account")
+                .arg(arg_input_storage.clone())
+                .arg(arg_address.clone()),
         )
+        .subcommand(
+            SubCommand::with_name("create")
+                .about("Create contract by code and input")
+                .arg(
+                    Arg::with_name("code")
+                        .long("code")
+                        .short("c")
+                        .takes_value(true)
+                        .required(true)
+                        .help("The binary code path"),
+                )
+                .arg(arg_address.clone())
+                .arg(
+                    arg_input_data
+                        .clone()
+                        .help("The input data file for the contract"),
+                )
+                .arg(arg_input_storage.clone())
+                .arg(arg_output_storage.clone()),
+        )
+        .subcommand(
+            SubCommand::with_name("call")
+                .about("Call a contract")
+                .arg(arg_address.clone().required(true))
+                .arg(arg_input_data.clone())
+                .arg(arg_input_storage.clone().required(true))
+                .arg(arg_output_storage)
+                .arg(
+                    Arg::with_name("static")
+                        .long("static")
+                        .help("Call with static mode"),
+                ),
+        )
+        .subcommand(abi_cmd::sub_command("ethabi"))
         .get_matches();
 
-    for i in 0..2 {
-        let host_context = Box::new(TestHostContext::new(0));
-        let host_context_ptr = HostContextPtr::from(host_context);
-        let mut context = ExecutionContext::new(TestHostContext::interface(), host_context_ptr.ptr);
-        let instance = Evmone::new();
-
-        let destination = Address([32u8; 20]);
-        let sender = Address([128u8; 20]);
-        let value = Uint256([1u8; 32]);
-        let create2_salt = Bytes32([255u8; 32]);
-
-        let code = load_binary(matches.value_of("code").unwrap());
-        let input_data = if let Some(input_data_path) = matches.value_of("input-data") {
-            load_binary(&input_data_path)
-        } else {
-            Vec::new()
-        };
-
-        let raw_message = ffi::evmc_message {
-            kind: CallKind::EVMC_CREATE,
-            flags: 44,
-            depth: 0,
-            gas: 4_466_666,
-            destination: destination.into(),
-            sender: sender.into(),
-            input_data: input_data.as_ptr(),
-            input_size: input_data.len(),
-            value: value.into(),
-            create2_salt: create2_salt.into(),
-        };
-        let message = ExecutionMessage::from(&raw_message);
-
-        let result = instance.execute(Revision::EVMC_PETERSBURG, &code, &message, &mut context);
-        println!("[Round {}] Execution result: {:?}\n", i, result);
+    if let Some(sub_matches) = global_matches.subcommand_matches("ethabi") {
+        return abi_cmd::process(sub_matches);
     }
+
+    let sender = Address([128u8; 20]);
+    let value = Uint256([1u8; 32]);
+    let create2_salt = Bytes32([0u8; 32]);
+
+    let get_context = |matches: &ArgMatches, destination, required| -> Result<_, String> {
+        if required && matches.value_of("input-storage").is_none() {
+            return Err("<input-storage> is required!".to_string());
+        }
+        let host_context: TestHostContext = matches
+            .value_of("input-storage")
+            .map(|path| {
+                println!("Load context from: {}", path);
+                let json_string = String::from_utf8(fs::read(path).unwrap()).unwrap();
+                serde_json::from_slice(json_string.trim().as_bytes()).unwrap()
+            })
+            .unwrap_or_else(|| {
+                println!("New context for: {:?}", destination);
+                TestHostContext::new(0, destination)
+            });
+        Ok(host_context)
+    };
+
+    let vm = EvmcVm::new(unsafe { evmc_create_evmone() });
+    match global_matches.subcommand() {
+        ("create", Some(sub_matches)) => {
+            let destination: Address = sub_matches
+                .value_of("address")
+                .map(|s| serde_json::from_str(format!("\"{}\"", s).as_str()).unwrap())
+                .unwrap();
+            let host_context = get_context(sub_matches, destination.clone(), false)?;
+            if host_context.contract_exists(&destination) {
+                return Err(format!("Contract already exists: {:?}", destination));
+            }
+            let host_context_ptr = HostContextPtr::from(Box::new(host_context));
+            let mut context =
+                ExecutionContext::new(TestHostContext::interface(), host_context_ptr.ptr);
+            let code = sub_matches.value_of("code").map(load_binary).unwrap();
+            let input_data = sub_matches
+                .value_of("input-data")
+                .map(load_binary)
+                .unwrap_or_default();
+
+            let raw_message = ffi::evmc_message {
+                kind: CallKind::EVMC_CREATE,
+                flags: 0,
+                depth: 0,
+                gas: 4_466_666,
+                destination: destination.clone().into(),
+                sender: sender.into(),
+                input_data: input_data.as_ptr(),
+                input_size: input_data.len(),
+                value: value.into(),
+                create2_salt: create2_salt.into(),
+            };
+            let message = ExecutionMessage::from(&raw_message);
+
+            let result = vm.execute(Revision::EVMC_PETERSBURG, &code, &message, &mut context);
+            println!("Execution result: {:#?}\n", result);
+
+            assert_eq!(result.create_address, Address::default());
+            let mut wrapper = HostContextWrapper::from(context.context);
+            let context: &mut TestHostContext = &mut wrapper;
+            if result.status_code == StatusCode::EVMC_SUCCESS
+                && (message.kind == CallKind::EVMC_CREATE || message.kind == CallKind::EVMC_CREATE2)
+            {
+                context.update_code(destination, result.output_data);
+            }
+
+            if let Some(output_storage_path) = sub_matches.value_of("output-storage") {
+                let data = serde_json::to_string_pretty(context).unwrap();
+                fs::write(output_storage_path, data.as_bytes()).unwrap();
+            }
+        }
+        ("call", Some(sub_matches)) => {
+            let destination: Address = sub_matches
+                .value_of("address")
+                .map(|s| serde_json::from_str(format!("\"{}\"", s).as_str()).unwrap())
+                .unwrap();
+            let host_context = get_context(sub_matches, destination.clone(), true)?;
+            let code = host_context
+                .accounts
+                .get(&destination)
+                .unwrap()
+                .code
+                .clone()
+                .unwrap();
+            let host_context_ptr = HostContextPtr::from(Box::new(host_context));
+            let mut context =
+                ExecutionContext::new(TestHostContext::interface(), host_context_ptr.ptr);
+
+            let input_data = sub_matches
+                .value_of("input-data")
+                .map(|s| hex::decode(s).unwrap())
+                .unwrap_or_default();
+
+            println!("address: {:?}", destination);
+            println!("code: {}", hex::encode(&code.0));
+            println!("input-data: {}", hex::encode(&input_data));
+            let flags = if sub_matches.is_present("static") {
+                1
+            } else {
+                0
+            };
+            let raw_message = ffi::evmc_message {
+                kind: CallKind::EVMC_CALL,
+                flags,
+                depth: 0,
+                gas: 4_466_666,
+                destination: destination.clone().into(),
+                sender: sender.into(),
+                input_data: input_data.as_ptr(),
+                input_size: input_data.len(),
+                value: value.into(),
+                create2_salt: Default::default(),
+            };
+            let message = ExecutionMessage::from(&raw_message);
+
+            let result = vm.execute(Revision::EVMC_PETERSBURG, &code.0, &message, &mut context);
+            println!("Execution result: {:#?}\n", result);
+
+            assert_eq!(result.create_address, Address::default());
+            let mut wrapper = HostContextWrapper::from(context.context);
+            let context: &mut TestHostContext = &mut wrapper;
+            if result.status_code == StatusCode::EVMC_SUCCESS
+                && (message.kind == CallKind::EVMC_CREATE || message.kind == CallKind::EVMC_CREATE2)
+            {
+                context.update_code(destination, result.output_data);
+            }
+
+            if let Some(output_storage_path) = sub_matches.value_of("output-storage") {
+                let data = serde_json::to_string_pretty(context).unwrap();
+                fs::write(output_storage_path, data.as_bytes()).unwrap();
+            }
+        }
+        ("list", Some(sub_matches)) => {
+            let host_context = get_context(sub_matches, Default::default(), true)?;
+            for (address, account) in host_context.accounts {
+                println!(
+                    "Account(address: {:?}, code: {:?}, nonce: {})",
+                    address,
+                    account.code.is_some(),
+                    account.nonce,
+                );
+            }
+        }
+        ("show", Some(sub_matches)) => {
+            let host_context = get_context(sub_matches, Default::default(), true)?;
+            let destination: Address = sub_matches
+                .value_of("address")
+                .map(|s| serde_json::from_str(format!("\"{}\"", s).as_str()).unwrap())
+                .unwrap();
+            if let Some(account) = host_context.accounts.get(&destination) {
+                println!("{}", serde_json::to_string_pretty(account).unwrap());
+            } else {
+                return Err(format!("Account not exists: {:?}", destination));
+            }
+        }
+        ("remove", Some(sub_matches)) => {
+            let mut host_context = get_context(sub_matches, Default::default(), true)?;
+            let destination: Address = sub_matches
+                .value_of("address")
+                .map(|s| serde_json::from_str(format!("\"{}\"", s).as_str()).unwrap())
+                .unwrap();
+            if let Some(account) = host_context.accounts.remove(&destination) {
+                let path = sub_matches.value_of("input-storage").unwrap();
+                let data = serde_json::to_string_pretty(&host_context).unwrap();
+                fs::write(path, data.as_bytes()).unwrap();
+                println!(
+                    "[Account removed]: {:?}\n{}",
+                    destination,
+                    serde_json::to_string_pretty(&account).unwrap(),
+                );
+            } else {
+                return Err(format!("Account not exists: {:?}", destination));
+            }
+        }
+        (name, args) => {
+            println!("ERROR subcommand: name={}, args: {:?}", name, args);
+        }
+    }
+
+    Ok(())
 }
 
 fn load_binary(path: &str) -> Vec<u8> {
@@ -87,25 +303,44 @@ fn load_binary(path: &str) -> Vec<u8> {
     .unwrap()
 }
 
+#[derive(Clone, PartialEq, Eq, Hash, Default)]
+pub struct JsonBytes(pub Vec<u8>);
+
+fn parse_bytes(bytes: &[u8]) -> Result<JsonBytes, String> {
+    let mut target = vec![0u8; bytes.len() / 2];
+    hex::decode_to_slice(bytes, &mut target).map_err(|e| e.to_string())?;
+    Ok(JsonBytes(target))
+}
+impl_serde!(JsonBytes, BytesVisitor, parse_bytes);
+
+impl fmt::Debug for JsonBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", hex::encode(&self.0))
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Default, Deserialize, Serialize)]
 pub struct Value {
     data: Bytes32,
-    // Modified time:
+    // Modify time:
     //   0 => first set
     //   1 => modified
     //   2..n => modifled again
-    modified: usize,
+    modify_time: usize,
 }
 
 impl Value {
     fn new(data: Bytes32) -> Value {
-        Value { data, modified: 0 }
+        Value {
+            data,
+            modify_time: 0,
+        }
     }
 
     fn update_data(&mut self, data: Bytes32) -> bool {
         if data != self.data {
             self.data = data;
-            self.modified += 1;
+            self.modify_time += 1;
             true
         } else {
             false
@@ -113,20 +348,91 @@ impl Value {
     }
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize, Clone, Debug)]
+pub struct LogEntry {
+    data: JsonBytes,
+    topics: Vec<Bytes32>,
+}
+
+#[derive(Default, Serialize, Deserialize, Clone, Debug)]
+pub struct AccountData {
+    nonce: u64,
+    address: Address,
+    // The code stored in the account, not the code created the account
+    code: Option<JsonBytes>,
+    storage: HashMap<Bytes32, Value>,
+    logs: Vec<LogEntry>,
+}
+
+impl AccountData {
+    pub fn new(address: Address) -> AccountData {
+        println!("AccountData::new({:?})", address);
+        AccountData {
+            nonce: 0,
+            address,
+            code: None,
+            storage: HashMap::default(),
+            logs: Vec::new(),
+        }
+    }
+}
+
+#[derive(Default, Serialize, Deserialize, Clone, Debug)]
 pub struct TestHostContext {
     pub depth: u32,
-    pub code: Vec<u8>,
-    pub storage: HashMap<Address, HashMap<Bytes32, Value>>,
+    // Current account's address
+    pub current_account: Address,
+    pub accounts: HashMap<Address, AccountData>,
+    pub destructed_accounts: Vec<Address>,
 }
 
 impl TestHostContext {
-    pub fn new(depth: u32) -> TestHostContext {
+    pub fn new(depth: u32, current_account: Address) -> TestHostContext {
         TestHostContext {
             depth,
-            code: Vec::new(),
-            storage: HashMap::default(),
+            current_account,
+            accounts: HashMap::default(),
+            destructed_accounts: Vec::new(),
         }
+    }
+
+    pub fn contract_exists(&self, address: &Address) -> bool {
+        self.accounts
+            .get(address)
+            .map(|account| account.code.is_some())
+            .unwrap_or(false)
+    }
+
+    pub fn update_code(&mut self, address: Address, code: Vec<u8>) {
+        // println!(">> before update_code context: {:#?}", self);
+        let account = self
+            .accounts
+            .entry(address.clone())
+            .or_insert_with(|| AccountData::new(address));
+        account.code = Some(JsonBytes(code));
+        // println!(">> after update_code context: {:#?}", self);
+    }
+
+    // We assume the `other` account always have latest state
+    pub fn update(&mut self, other: &TestHostContext) {
+        if other.destructed_accounts.len() < self.destructed_accounts.len() {
+            panic!(
+                "other destructed_accounts length invalid ({} < {})",
+                other.destructed_accounts.len(),
+                self.destructed_accounts.len()
+            );
+        }
+        for address in &other.destructed_accounts {
+            if other.accounts.contains_key(address) {
+                panic!(
+                    "Invalid state for context, address={:?}",
+                    other.current_account
+                );
+            }
+        }
+
+        self.accounts = other.accounts.clone();
+        self.destructed_accounts = other.destructed_accounts.clone();
     }
 }
 
@@ -155,28 +461,37 @@ impl HostContext for TestHostContext {
 
     fn get_storage(&mut self, address: &Address, key: &Bytes32) -> Bytes32 {
         println!("get(address: {:?}, key: {:?})", address, key);
-        self.storage
+        self.accounts
             .get(address)
-            .and_then(|map| map.get(key))
+            .and_then(|account| account.storage.get(key))
             .map(|value| value.data.clone())
             .unwrap_or_default()
     }
 
     fn set_storage(&mut self, address: Address, key: Bytes32, value: Bytes32) -> StorageStatus {
+        // println!(">> before set_storage context: {:#?}", self);
         println!(
-            "set(address: {:?}, key: {:?}), value: {:?}",
-            address, key, value
+            "set(address: {:?}, key: {:?}), value: {:?}, contains_address: {}",
+            address,
+            key,
+            value,
+            self.accounts.contains_key(&address)
         );
-        let val = self
-            .storage
-            .entry(address)
-            .or_default()
-            .entry(key)
-            .or_insert_with(|| Value::new(value.clone()));
-        let changed = val.update_data(value);
+        let (modify_time, changed) = {
+            let val = self
+                .accounts
+                .entry(address.clone())
+                .or_insert_with(|| AccountData::new(address))
+                .storage
+                .entry(key)
+                .or_insert_with(|| Value::new(value.clone()));
+            let changed = val.update_data(value);
+            (val.modify_time, changed)
+        };
+        // println!(">> after set_storage context: {:#?}", self);
 
-        match (val.modified, changed) {
-            (0, true) => unreachable!(),
+        match (modify_time, changed) {
+            (0, true) => panic!("Invalid storage value data"),
             (0, false) => StorageStatus::EVMC_STORAGE_ADDED,
             (1, true) => StorageStatus::EVMC_STORAGE_MODIFIED,
             (_, true) => StorageStatus::EVMC_STORAGE_MODIFIED_AGAIN,
@@ -191,15 +506,41 @@ impl HostContext for TestHostContext {
 
     fn call(&mut self, message: ExecutionMessage) -> ExecutionResult {
         println!("call(message: {:?})", message);
-        let code = hex::decode(&SIMPLE_STORAGE_CODE).unwrap();
-        let host_context = Box::new(TestHostContext::new(message.depth as u32 + 1));
+        let destination = Address::from(message.destination);
+        let code = if let Some(account) = self.accounts.get(&destination) {
+            if let Some(code) = account.code.as_ref() {
+                code.clone()
+            } else {
+                panic!("No code found form account: {:?}", destination);
+            }
+        } else {
+            panic!("Not such account: {:?}", destination);
+        };
+        let host_context = {
+            let mut context = self.clone();
+            context.depth = message.depth as u32 + 1;
+            context.current_account = destination.clone();
+            Box::new(context)
+        };
         let host_context_ptr = HostContextPtr::from(host_context);
         let mut context = ExecutionContext::new(TestHostContext::interface(), host_context_ptr.ptr);
-        let instance = Evmone::new();
-        instance.execute(Revision::EVMC_PETERSBURG, &code, &message, &mut context)
+        let vm = EvmcVm::new(unsafe { evmc_create_evmone() });
+        let result = vm.execute(Revision::EVMC_PETERSBURG, &code.0, &message, &mut context);
+
+        let mut wrapper = HostContextWrapper::from(context.context);
+        let context: &mut TestHostContext = &mut wrapper;
+        if result.status_code == StatusCode::EVMC_SUCCESS {
+            assert_eq!(result.create_address, destination);
+            if message.kind == CallKind::EVMC_CREATE || message.kind == CallKind::EVMC_CREATE2 {
+                context.update_code(destination, result.output_data.clone());
+            }
+        }
+        self.update(context);
+        result
     }
 
     fn selfdestruct(&mut self, address: &Address, beneficiary: &Address) {
+        self.destructed_accounts.push(address.clone());
         println!(
             "emit_log(address: {:?}, beneficiary: {:?})",
             address, beneficiary
@@ -208,15 +549,27 @@ impl HostContext for TestHostContext {
 
     fn emit_log(&mut self, address: &Address, data: &[u8], topics: &[Bytes32]) {
         println!(
-            "emit_log(address: {:?}, data: {:?}, topics: {:?})",
-            address, data, topics
+            "emit_log(address: {:?}, data: {}, topics: {:?})",
+            address,
+            hex::encode(data),
+            topics
         );
+        self.accounts
+            .entry(address.clone())
+            .or_insert_with(|| AccountData::new(address.clone()))
+            .logs
+            .push(LogEntry {
+                data: JsonBytes(data.to_vec()),
+                topics: topics.to_vec(),
+            });
     }
 
     fn copy_code(&mut self, address: &Address, code_offset: usize, buffer: &[u8]) -> usize {
         println!(
-            "copy_code(address: {:?}, code_offset: {:?}, buffer: {:?})",
-            address, code_offset, buffer
+            "copy_code(address: {:?}, code_offset: {:?}, buffer: {})",
+            address,
+            code_offset,
+            hex::encode(buffer)
         );
         0
     }

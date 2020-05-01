@@ -24,7 +24,8 @@ extern "C" {
 // ====
 //  [x]: save/load storage(TestHostContext) from a json file
 //  [x]: Merge two TestHostContext
-//  [ ]: Test SimpleStorage::{set, get}
+//  [x]: Test SimpleStorage::set
+//  [ ]: Test SimpleStorage::get
 //  [ ]: Test LogEvents::log
 //  [ ]: Test create contract
 //  [ ]: Test call other contract

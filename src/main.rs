@@ -25,9 +25,9 @@ extern "C" {
 //  [x]: save/load storage(TestHostContext) from a json file
 //  [x]: Merge two TestHostContext
 //  [x]: Test SimpleStorage::set
-//  [ ]: Test SimpleStorage::get
-//  [ ]: Test LogEvents::log
-//  [ ]: Test create contract
+//  [ ]: Test SimpleStorage::get => EVMC_REVERT
+//  [x]: Test LogEvents::log
+//  [ ]: Test create contract => EVMC_REVERT
 //  [ ]: Test call other contract
 //  [ ]: Test selfdestruct
 
@@ -111,8 +111,7 @@ fn main() -> Result<(), String> {
     }
 
     let sender = Address([128u8; 20]);
-    let value = Uint256([1u8; 32]);
-    let create2_salt = Bytes32([0u8; 32]);
+    let value = Uint256([2u8; 32]);
 
     let get_context = |matches: &ArgMatches, destination, required| -> Result<_, String> {
         if required && matches.value_of("input-storage").is_none() {
@@ -162,11 +161,11 @@ fn main() -> Result<(), String> {
                 input_data: input_data.as_ptr(),
                 input_size: input_data.len(),
                 value: value.into(),
-                create2_salt: create2_salt.into(),
+                create2_salt: Bytes32::default().into(),
             };
             let message = ExecutionMessage::from(&raw_message);
 
-            let result = vm.execute(Revision::EVMC_PETERSBURG, &code, &message, &mut context);
+            let result = vm.execute(Revision::EVMC_MAX_REVISION, &code, &message, &mut context);
             println!("Execution result: {:#?}\n", result);
 
             assert_eq!(result.create_address, Address::default());
@@ -217,7 +216,7 @@ fn main() -> Result<(), String> {
                 kind: CallKind::EVMC_CALL,
                 flags,
                 depth: 0,
-                gas: 4_466_666,
+                gas: 4_400_000,
                 destination: destination.clone().into(),
                 sender: sender.into(),
                 input_data: input_data.as_ptr(),
@@ -227,7 +226,7 @@ fn main() -> Result<(), String> {
             };
             let message = ExecutionMessage::from(&raw_message);
 
-            let result = vm.execute(Revision::EVMC_PETERSBURG, &code.0, &message, &mut context);
+            let result = vm.execute(Revision::EVMC_MAX_REVISION, &code.0, &message, &mut context);
             println!("Execution result: {:#?}\n", result);
 
             assert_eq!(result.create_address, Address::default());
@@ -443,12 +442,13 @@ impl HostContext for TestHostContext {
     }
 
     fn get_tx_context(&mut self) -> TxContext {
+        println!("get_tx_context()");
         TxContext {
             tx_gas_price: Uint256::default().into(),
             tx_origin: Address([128u8; 20]).into(),
             block_coinbase: Address::default().into(),
-            block_number: 0,
-            block_timestamp: 0,
+            block_number: 1,
+            block_timestamp: 1,
             block_gas_limit: 666_666_666,
             block_difficulty: Uint256::default().into(),
             chain_id: Uint256::default().into(),

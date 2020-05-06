@@ -210,9 +210,9 @@ impl fmt::Debug for ExecutionResult {
             .field("status_code", &self.status_code)
             .field("gas_left", &self.gas_left)
             .field("output_data", &output_data_hex)
-            .field("release", &self.release)
+            .field("release", &format_args!("{:?}", &self.release))
             .field("create_address", &self.create_address)
-            .field("padding", &self.padding)
+            .field("padding", &format_args!("{:?}", &self.padding))
             .finish()
     }
 }

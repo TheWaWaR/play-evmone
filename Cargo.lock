@@ -353,6 +353,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8b7a7c0c47db5545ed3fef7468ee7bb5b74691498139e4b3f6a20685dc6dd8e"
 
 [[package]]
+name = "keccak-hash"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f58a51ef3df9398cf2434bea8d4eb61fb748d0feb1571f87388579a120a4c8f"
+dependencies = [
+ "primitive-types",
+ "tiny-keccak 2.0.2",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -432,6 +442,8 @@ dependencies = [
  "ethereum-types 0.1.4",
  "evmc-sys",
  "hex",
+ "keccak-hash",
+ "rlp",
  "serde",
  "serde_json",
 ]

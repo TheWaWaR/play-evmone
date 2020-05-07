@@ -7,6 +7,8 @@ use std::slice::from_raw_parts;
 
 use evmc_sys as ffi;
 use hex;
+use keccak_hash::keccak;
+use rlp::RlpStream;
 use serde;
 
 /// EVMC call kind.
@@ -225,7 +227,7 @@ impl From<ffi::evmc_result> for ExecutionResult {
             gas_left: result.gas_left,
             output_data: output_data.to_vec(),
             release: result.release,
-            create_address: result.create_address.into(),
+            create_address: result.create_address.clone().into(),
             padding: result.padding,
         }
     }
@@ -234,6 +236,7 @@ impl From<ExecutionResult> for ffi::evmc_result {
     fn from(result: ExecutionResult) -> ffi::evmc_result {
         let output_size = result.output_data.len();
         let output_data = result.output_data.as_ptr();
+        std::mem::forget(result.output_data);
         ffi::evmc_result {
             status_code: result.status_code,
             gas_left: result.gas_left,
@@ -267,6 +270,34 @@ impl ExecutionContext {
 #[derive(Debug)]
 pub struct ExecutionMessage<'a> {
     pub inner: &'a ffi::evmc_message,
+}
+
+impl<'a> ExecutionMessage<'a> {
+    pub fn is_create(&self) -> bool {
+        self.inner.kind == CallKind::EVMC_CREATE || self.inner.kind == CallKind::EVMC_CREATE2
+    }
+
+    pub fn input_data(&self) -> &[u8] {
+        unsafe { from_raw_parts(self.inner.input_data, self.inner.input_size) }
+    }
+
+    pub fn destination(&self, sender_nonce: Uint256) -> (Address, Option<Bytes32>) {
+        match self.inner.kind {
+            CallKind::EVMC_CREATE => {
+                let mut stream = RlpStream::new_list(2);
+                stream.append(&&self.inner.sender.bytes[..]);
+                stream.append(&&sender_nonce.0[..]);
+                let mut data = [0u8; 20];
+                data.copy_from_slice(&keccak(stream.as_raw()).0[12..32]);
+                (Address(data), None)
+            }
+            CallKind::EVMC_CREATE2 => {
+                // FIXME: implementation
+                (Address::default(), None)
+            }
+            _ => (Address::from(self.inner.destination), None),
+        }
+    }
 }
 
 impl<'a> From<&'a ffi::evmc_message> for ExecutionMessage<'a> {

@@ -27,7 +27,7 @@ extern "C" {
 //  [x]: Test SimpleStorage::set
 //  [x]: Test SimpleStorage::get
 //  [x]: Test LogEvents::log
-//  [ ]: Test create contract => EVMC_REVERT
+//  [x]: Test create contract
 //  [ ]: Test call other contract
 //  [ ]: Test selfdestruct
 
@@ -110,8 +110,6 @@ fn main() -> Result<(), String> {
         return abi_cmd::process(sub_matches);
     }
 
-    let sender = Address([128u8; 20]);
-
     let get_context = |matches: &ArgMatches, destination, required| -> Result<_, String> {
         if required && matches.value_of("input-storage").is_none() {
             return Err("<input-storage> is required!".to_string());
@@ -155,13 +153,13 @@ fn main() -> Result<(), String> {
                 kind: CallKind::EVMC_CREATE,
                 flags: 0,
                 depth: 0,
-                gas: 4_466_666,
+                gas: 4_466_666_666,
                 destination: destination.clone().into(),
-                sender: sender.into(),
+                sender: Address([128u8; 20]).into(),
                 input_data: input_data.as_ptr(),
                 input_size: input_data.len(),
                 value: value.into(),
-                create2_salt: Bytes32::default().into(),
+                create2_salt: Bytes32([1u8; 32]).into(),
             };
             let message = ExecutionMessage::from(&raw_message);
 
@@ -171,9 +169,7 @@ fn main() -> Result<(), String> {
             assert_eq!(result.create_address, Address::default());
             let mut wrapper = HostContextWrapper::from(context.context);
             let context: &mut TestHostContext = &mut wrapper;
-            if result.status_code == StatusCode::EVMC_SUCCESS
-                && (message.kind == CallKind::EVMC_CREATE || message.kind == CallKind::EVMC_CREATE2)
-            {
+            if result.status_code == StatusCode::EVMC_SUCCESS && message.is_create() {
                 context.update_code(destination, result.output_data);
             }
 
@@ -222,7 +218,7 @@ fn main() -> Result<(), String> {
                 depth: 0,
                 gas: 4_400_000,
                 destination: destination.clone().into(),
-                sender: sender.into(),
+                sender: Address([128u8; 20]).into(),
                 input_data: input_data.as_ptr(),
                 input_size: input_data.len(),
                 value: value.into(),
@@ -379,6 +375,12 @@ impl AccountData {
             logs: Vec::new(),
         }
     }
+
+    fn nonce_u256(&self) -> Uint256 {
+        let mut data = [0u8; 32];
+        data[0..8].copy_from_slice(&self.nonce.to_le_bytes());
+        Uint256(data)
+    }
 }
 
 #[derive(Default, Serialize, Deserialize, Clone, Debug)]
@@ -511,10 +513,26 @@ impl HostContext for TestHostContext {
 
     fn call(&mut self, message: ExecutionMessage) -> ExecutionResult {
         println!("call(message: {:?})", message);
-        let destination = Address::from(message.destination);
-        let code = if let Some(account) = self.accounts.get(&destination) {
+        let sender = Address::from(message.inner.sender);
+        let sender_nonce = self
+            .accounts
+            .entry(sender.clone())
+            .or_insert_with(|| AccountData::new(sender))
+            .nonce_u256();
+        let (destination, _code_hash) = message.destination(sender_nonce);
+        let mut message_inner = *message.inner;
+        let message = {
+            message_inner.destination = destination.clone().into();
+            ExecutionMessage {
+                inner: &message_inner,
+            }
+        };
+        println!("call destination: {:?}", destination);
+        let code = if message.is_create() {
+            message.input_data().to_vec()
+        } else if let Some(account) = self.accounts.get(&destination) {
             if let Some(code) = account.code.as_ref() {
-                code.clone()
+                code.clone().0
             } else {
                 panic!("No code found form account: {:?}", destination);
             }
@@ -530,16 +548,15 @@ impl HostContext for TestHostContext {
         let host_context_ptr = HostContextPtr::from(host_context);
         let mut context = ExecutionContext::new(TestHostContext::interface(), host_context_ptr.ptr);
         let vm = EvmcVm::new(unsafe { evmc_create_evmone() });
-        let result = vm.execute(Revision::EVMC_PETERSBURG, &code.0, &message, &mut context);
+        let mut result = vm.execute(Revision::EVMC_PETERSBURG, &code, &message, &mut context);
+        println!("Execution result: {:#?}\n", result);
 
         let mut wrapper = HostContextWrapper::from(context.context);
         let context: &mut TestHostContext = &mut wrapper;
-        if result.status_code == StatusCode::EVMC_SUCCESS {
-            assert_eq!(result.create_address, destination);
-            if message.kind == CallKind::EVMC_CREATE || message.kind == CallKind::EVMC_CREATE2 {
-                context.update_code(destination, result.output_data.clone());
-            }
+        if result.status_code == StatusCode::EVMC_SUCCESS && message.is_create() {
+            context.update_code(destination.clone(), result.output_data.clone());
         }
+        result.create_address = destination;
         self.update(context);
         result
     }

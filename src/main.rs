@@ -25,7 +25,7 @@ extern "C" {
 //  [x]: save/load storage(TestHostContext) from a json file
 //  [x]: Merge two TestHostContext
 //  [x]: Test SimpleStorage::set
-//  [ ]: Test SimpleStorage::get => EVMC_REVERT
+//  [x]: Test SimpleStorage::get
 //  [x]: Test LogEvents::log
 //  [ ]: Test create contract => EVMC_REVERT
 //  [ ]: Test call other contract
@@ -111,7 +111,6 @@ fn main() -> Result<(), String> {
     }
 
     let sender = Address([128u8; 20]);
-    let value = Uint256([2u8; 32]);
 
     let get_context = |matches: &ArgMatches, destination, required| -> Result<_, String> {
         if required && matches.value_of("input-storage").is_none() {
@@ -134,6 +133,7 @@ fn main() -> Result<(), String> {
     let vm = EvmcVm::new(unsafe { evmc_create_evmone() });
     match global_matches.subcommand() {
         ("create", Some(sub_matches)) => {
+            let value = Uint256([3u8; 32]);
             let destination: Address = sub_matches
                 .value_of("address")
                 .map(|s| serde_json::from_str(format!("\"{}\"", s).as_str()).unwrap())
@@ -183,6 +183,7 @@ fn main() -> Result<(), String> {
             }
         }
         ("call", Some(sub_matches)) => {
+            let value = Uint256([0u8; 32]);
             let destination: Address = sub_matches
                 .value_of("address")
                 .map(|s| serde_json::from_str(format!("\"{}\"", s).as_str()).unwrap())
@@ -207,11 +208,14 @@ fn main() -> Result<(), String> {
             println!("address: {:?}", destination);
             println!("code: {}", hex::encode(&code.0));
             println!("input-data: {}", hex::encode(&input_data));
-            let flags = if sub_matches.is_present("static") {
-                1
-            } else {
-                0
-            };
+            let is_static = sub_matches.is_present("static");
+            let mut flags: u32 = 0;
+            unsafe {
+                if is_static {
+                    flags |=
+                        std::mem::transmute::<ffi::evmc_flags, u32>(ffi::evmc_flags::EVMC_STATIC);
+                }
+            }
             let raw_message = ffi::evmc_message {
                 kind: CallKind::EVMC_CALL,
                 flags,

@@ -28,7 +28,7 @@ extern "C" {
 //  [x]: Test SimpleStorage::get
 //  [x]: Test LogEvents::log
 //  [x]: Test create contract
-//  [ ]: Test call other contract
+//  [x]: Test call other contract
 //  [ ]: Test selfdestruct
 
 fn main() -> Result<(), String> {
@@ -143,11 +143,16 @@ fn main() -> Result<(), String> {
             let host_context_ptr = HostContextPtr::from(Box::new(host_context));
             let mut context =
                 ExecutionContext::new(TestHostContext::interface(), host_context_ptr.ptr);
-            let code = sub_matches.value_of("code").map(load_binary).unwrap();
+            let mut code = sub_matches.value_of("code").map(load_binary).unwrap();
             let input_data = sub_matches
                 .value_of("input-data")
-                .map(load_binary)
+                .map(|s| hex::decode(s).unwrap())
                 .unwrap_or_default();
+
+            println!("address: {:?}", destination);
+            println!("code: {}", hex::encode(&code));
+            println!("input-data: {}", hex::encode(&input_data));
+            code.extend(input_data);
 
             let raw_message = ffi::evmc_message {
                 kind: CallKind::EVMC_CREATE,
@@ -156,10 +161,10 @@ fn main() -> Result<(), String> {
                 gas: 4_466_666_666,
                 destination: destination.clone().into(),
                 sender: Address([128u8; 20]).into(),
-                input_data: input_data.as_ptr(),
-                input_size: input_data.len(),
+                input_data: std::ptr::null(),
+                input_size: 0,
                 value: value.into(),
-                create2_salt: Bytes32([1u8; 32]).into(),
+                create2_salt: Bytes32([0u8; 32]).into(),
             };
             let message = ExecutionMessage::from(&raw_message);
 
@@ -539,6 +544,9 @@ impl HostContext for TestHostContext {
         } else {
             panic!("Not such account: {:?}", destination);
         };
+        println!("code: {}", hex::encode(&code));
+        println!("input-data: {}", hex::encode(&message.input_data()));
+
         let host_context = {
             let mut context = self.clone();
             context.depth = message.depth as u32 + 1;
